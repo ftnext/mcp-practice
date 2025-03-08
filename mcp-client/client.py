@@ -39,6 +39,87 @@ class MCPClient:
         print()
         print("Connection to server with tools:", [tool.name for tool in tools])
 
+    async def process_query(self, query: str) -> str:
+        messages = [{"role": "user", "content": query}]
+        response = await self.session.list_tools()
+        available_tools = [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.inputSchema,
+            }
+            for tool in response.tools
+        ]
+
+        response = self.anthropic.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1000,
+            messages=messages,
+            tools=available_tools,
+        )
+
+        tool_results = []
+        final_text = []
+        assistant_message_content = []
+        for content in response.content:
+            if content.type == "text":
+                final_text.append(content.text)
+                assistant_message_content.append(content)
+            elif content.type == "tool_use":
+                tool_name = content.name
+                tool_args = content.input
+
+                result = await self.session.call_tool(tool_name, tool_args)
+                tool_results.append({"call_name": tool_name, "result": result})
+                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+
+                assistant_message_content.append(content)
+                messages.append(
+                    {"role": "assistant", "content": assistant_message_content}
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": content.id,
+                                "content": result.content,
+                            }
+                        ],
+                    }
+                )
+
+                response = self.anthropic.messages.create(
+                    model="claude-3-5-sonnet-20241022",
+                    max_tokens=1000,
+                    messages=messages,
+                    tools=available_tools,
+                )
+
+                final_text.append(response.content[0].text)
+
+        return "\n".join(final_text)
+
+    async def chat_loop(self) -> None:
+        print()
+        print("MCP Client Started!")
+        print("Type your queries or `quit` to exit.")
+
+        while True:
+            try:
+                print()
+                query = input("Query: ").strip()
+                if query.lower() == "quit":
+                    break
+
+                response = await self.process_query(query)
+                print()
+                print(response)
+            except Exception as e:
+                print()
+                print(f"Error: {e!r}")
+
     async def cleanup(self):
         await self.exit_stack.aclose()
 
@@ -47,6 +128,7 @@ async def main(argv: Sequence[str]) -> None:
     client = MCPClient()
     try:
         await client.connect_to_server(sys.argv[1])
+        await client.chat_loop()
     finally:
         await client.cleanup()
 
