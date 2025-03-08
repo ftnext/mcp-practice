@@ -52,5 +52,39 @@ async def get_alerts(state: str) -> str:
     return "\n---\n".join(alerts)
 
 
+def format_forecast(period: dict[str, Any]) -> str:
+    return f"""\
+{period["name"]}:
+Temperature: {period["temperature"]}°{period["temperatureUnit"]}
+Wind: {period["windSpeed"]} {period["windDirection"]}
+Forecast: {period["detailedForecast"]}\
+"""
+
+
+@mcp.tool()
+async def get_forecasts(latitude: float, longitude: float) -> str:
+    """Get weather forecasts for a location.
+
+    Args:
+        latitude: Latitude of the location
+        longitude: Longitude of the location
+    """
+    points_url = urljoin(NWS_API_BASE, f"/points/{latitude},{longitude}")
+    try:
+        points_data = await make_nws_request(points_url)
+    except Exception:
+        return "Unable to fetch forecast data for this location."
+
+    forecast_url = points_data["properties"]["forecast"]
+    try:
+        forecast_data = await make_nws_request(forecast_url)
+    except Exception:
+        return "Unable to fetch detailed forecast."
+
+    periods = forecast_data["properties"]["periods"]
+    forecasts = [format_forecast(period) for period in periods[:5]]
+    return "\n---\n".join(forecasts)
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
