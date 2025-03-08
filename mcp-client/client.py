@@ -35,14 +35,7 @@ class MCPClient:
         await self.session.initialize()
 
         response = await self.session.list_tools()
-        tools = response.tools
-        print()
-        print("Connection to server with tools:", [tool.name for tool in tools])
-
-    async def process_query(self, query: str) -> str:
-        messages = [{"role": "user", "content": query}]
-        response = await self.session.list_tools()
-        available_tools = [
+        self.available_tools = [
             {
                 "name": tool.name,
                 "description": tool.description,
@@ -50,12 +43,20 @@ class MCPClient:
             }
             for tool in response.tools
         ]
+        print()
+        print(
+            "Connection to server with tools:",
+            [tool["name"] for tool in self.available_tools],
+        )
+
+    async def process_query(self, query: str) -> str:
+        messages = [{"role": "user", "content": query}]
 
         response = self.anthropic.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=1000,
             messages=messages,
-            tools=available_tools,
+            tools=self.available_tools,
         )
 
         tool_results = []
@@ -94,7 +95,7 @@ class MCPClient:
                     model="claude-3-5-sonnet-20241022",
                     max_tokens=1000,
                     messages=messages,
-                    tools=available_tools,
+                    tools=self.available_tools,
                 )
 
                 final_text.append(response.content[0].text)
