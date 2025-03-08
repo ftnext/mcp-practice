@@ -1,10 +1,13 @@
 # https://modelcontextprotocol.io/quickstart/client
+# + openai https://www.ai-shift.co.jp/techblog/5226
+import json
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters, stdio_client
+from openai import OpenAI
 
 load_dotenv()
 
@@ -14,6 +17,7 @@ class MCPClient:
         self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()
         self.anthropic = Anthropic()
+        self.openai = OpenAI()
 
     async def connect_to_server(self, server_script_path: str):
         if not server_script_path.endswith(".py"):
@@ -35,70 +39,66 @@ class MCPClient:
         await self.session.initialize()
 
         response = await self.session.list_tools()
-        self.available_tools = [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.inputSchema,
-            }
-            for tool in response.tools
-        ]
+        self.available_tools = response.tools
         print()
         print(
             "Connection to server with tools:",
-            [tool["name"] for tool in self.available_tools],
+            [tool.name for tool in self.available_tools],
         )
 
     async def process_query(self, query: str) -> str:
         messages = [{"role": "user", "content": query}]
+        available_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema,
+                },
+            }
+            for tool in self.available_tools
+        ]
 
-        response = self.anthropic.messages.create(
-            model="claude-3-5-sonnet-20241022",
+        response = self.openai.chat.completions.create(
+            model="gpt-4o",
             max_tokens=1000,
             messages=messages,
-            tools=self.available_tools,
+            tools=available_tools,
         )
 
-        tool_results = []
+        message = response.choices[0].message
+        if not message.tool_calls:
+            return message.content
+
         final_text = []
-        assistant_message_content = []
-        for content in response.content:
-            if content.type == "text":
-                final_text.append(content.text)
-                assistant_message_content.append(content)
-            elif content.type == "tool_use":
-                tool_name = content.name
-                tool_args = content.input
+        messages.append(message)
+        for tool_call in message.tool_calls:
+            tool_name = tool_call.function.name
+            tool_call_id = tool_call.id
 
-                result = await self.session.call_tool(tool_name, tool_args)
-                tool_results.append({"call_name": tool_name, "result": result})
-                final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+            tool_args = json.loads(tool_call.function.arguments)
+            tool_result = await self.session.call_tool(tool_name, tool_args)
+            tool_result_contents = [
+                content.model_dump() for content in tool_result.content
+            ]
+            final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": tool_name,
+                    "content": tool_result_contents,
+                }
+            )
 
-                assistant_message_content.append(content)
-                messages.append(
-                    {"role": "assistant", "content": assistant_message_content}
-                )
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "tool_result",
-                                "tool_use_id": content.id,
-                                "content": result.content,
-                            }
-                        ],
-                    }
-                )
-
-                response = self.anthropic.messages.create(
-                    model="claude-3-5-sonnet-20241022",
-                    max_tokens=1000,
-                    messages=messages,
-                    tools=self.available_tools,
-                )
-
-                final_text.append(response.content[0].text)
+            response = self.openai.chat.completions.create(
+                model="gpt-4o",
+                max_tokens=1000,
+                messages=messages,
+                tools=available_tools,
+            )
+            final_text.append(response.choices[0].message.content)
 
         return "\n".join(final_text)
 
