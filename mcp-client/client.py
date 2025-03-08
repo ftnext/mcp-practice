@@ -1,6 +1,7 @@
 # https://modelcontextprotocol.io/quickstart/client
 # + openai https://www.ai-shift.co.jp/techblog/5226
 import json
+import os
 from collections.abc import Sequence
 from contextlib import AsyncExitStack
 
@@ -11,13 +12,19 @@ from openai import OpenAI
 
 load_dotenv()
 
+MODEL_NAME = "gemini-2.0-flash"
+MAX_TOKENS = 1000
+
 
 class MCPClient:
     def __init__(self):
         self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()
         self.anthropic = Anthropic()
-        self.openai = OpenAI()
+        self.openai = OpenAI(
+            api_key=os.getenv("GOOGLE_API_KEY"),
+            base_url="https://generativelanguage.googleapis.com/v1beta/",
+        )
 
     async def connect_to_server(self, server_script_path: str):
         if not server_script_path.endswith(".py"):
@@ -61,8 +68,8 @@ class MCPClient:
         ]
 
         response = self.openai.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=1000,
+            model=MODEL_NAME,
+            max_tokens=MAX_TOKENS,
             messages=messages,
             tools=available_tools,
         )
@@ -93,8 +100,8 @@ class MCPClient:
             )
 
             response = self.openai.chat.completions.create(
-                model="gpt-4o",
-                max_tokens=1000,
+                model=MODEL_NAME,
+                max_tokens=MAX_TOKENS,
                 messages=messages,
                 tools=available_tools,
             )
