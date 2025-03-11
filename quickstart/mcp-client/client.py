@@ -135,7 +135,7 @@ class MCPClient:
 async def main(argv: Sequence[str]) -> None:
     client = MCPClient()
     try:
-        await client.connect_to_server(sys.argv[1])
+        await client.connect_to_server(argv[1])
         await client.chat_loop()
     finally:
         await client.cleanup()
