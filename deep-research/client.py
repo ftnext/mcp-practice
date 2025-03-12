@@ -1,5 +1,6 @@
 # Build server: https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search#build
 import json
+import logging
 import os
 from contextlib import AsyncExitStack
 
@@ -11,6 +12,8 @@ load_dotenv()
 
 MODEL_NAME = "gemini-2.0-flash"
 MAX_TOKENS = 1000
+
+logger = logging.getLogger(__name__)
 
 
 class MCPClient:
@@ -44,9 +47,8 @@ class MCPClient:
 
         response = await self.session.list_tools()
         self.available_tools = response.tools
-        print()
-        print(
-            "Connection to server with tools:",
+        logger.info(
+            "Connection to server with tools: %s",
             [tool.name for tool in self.available_tools],
         )
 
@@ -86,7 +88,7 @@ class MCPClient:
             tool_result_contents = [
                 content.model_dump() for content in tool_result.content
             ]
-            final_text.append(f"[Calling tool {tool_name} with args {tool_args}]")
+            logger.info("[Calling tool %s with args %s]", tool_name, tool_args)
             messages.append(
                 {
                     "role": "tool",
@@ -107,8 +109,7 @@ class MCPClient:
         return "\n".join(final_text)
 
     async def chat_loop(self) -> None:
-        print()
-        print("MCP Client Started!")
+        logger.info("MCP Client Started!")
         print("Type your queries or `quit` to exit.")
 
         while True:
@@ -141,4 +142,9 @@ async def main() -> None:
 if __name__ == "__main__":
     import asyncio
 
+    logging.basicConfig(
+        format="%(asctime)s | %(levelname)s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
+        level=logging.INFO,
+        filename="mcp-client.log",
+    )
     asyncio.run(main())
