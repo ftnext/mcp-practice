@@ -71,8 +71,7 @@ class MCPClient:
             [tool.name for tool in self.available_tools],
         )
 
-    async def process_query(self, query: str) -> str:
-        self.messages.append({"role": "user", "content": query})
+    def completion(self, messages):
         available_tools = [
             {
                 "type": "function",
@@ -85,60 +84,54 @@ class MCPClient:
             for tool in self.available_tools
         ]
 
-        logger.debug(self.messages)
+        logger.debug(messages)
         response = self.openai.chat.completions.create(
             model=self.model_name,
             max_tokens=MAX_TOKENS,
-            messages=self.messages,
+            messages=messages,
             tools=available_tools,
         )
         logger.debug(response)
 
         assert len(response.choices) == 1
-        message = response.choices[0].message
+        return response.choices[0].message
+
+    async def process_query(self, query: str) -> str:
+        self.messages.append({"role": "user", "content": query})
+        message = self.completion(self.messages)
+
         self.messages.append(message)
-        if not message.tool_calls:
-            return message.content
+        while message.tool_calls:
+            for tool_call in message.tool_calls:
+                tool_name = tool_call.function.name
+                tool_call_id = tool_call.id
 
-        final_text = []
-        for tool_call in message.tool_calls:
-            tool_name = tool_call.function.name
-            tool_call_id = tool_call.id
+                tool_args = json.loads(tool_call.function.arguments)
+                tool_result = await self.tool2session[tool_name].call_tool(
+                    tool_name, tool_args
+                )
+                logger.info(
+                    "[Calling tool %s with args %s, Got %s]",
+                    tool_name,
+                    tool_args,
+                    tool_result,
+                )
+                tool_result_contents = [
+                    content.model_dump() for content in tool_result.content
+                ]
+                self.messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": tool_name,
+                        "content": tool_result_contents,
+                    }
+                )
 
-            tool_args = json.loads(tool_call.function.arguments)
-            tool_result = await self.tool2session[tool_name].call_tool(
-                tool_name, tool_args
-            )
-            logger.info(
-                "[Calling tool %s with args %s, Got %s]",
-                tool_name,
-                tool_args,
-                tool_result,
-            )
-            tool_result_contents = [
-                content.model_dump() for content in tool_result.content
-            ]
-            self.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call_id,
-                    "name": tool_name,
-                    "content": tool_result_contents,
-                }
-            )
+                message = self.completion(self.messages)
+                self.messages.append(message)
 
-            logger.debug(self.messages)
-            response = self.openai.chat.completions.create(
-                model=self.model_name,
-                max_tokens=MAX_TOKENS,
-                messages=self.messages,
-                tools=available_tools,
-            )
-            logger.debug(response)
-            assert len(response.choices) == 1
-            final_text.append(response.choices[0].message.content)
-
-        return "\n".join(final_text)
+        return message.content
 
     async def chat_loop(self) -> None:
         logger.info("MCP Client Started!")
