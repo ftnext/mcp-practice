@@ -143,6 +143,8 @@ class MCPClient:
             try:
                 print()
                 query = input("Query: ").strip()
+                if query == "":
+                    continue
                 if query.lower() == "quit":
                     break
 
