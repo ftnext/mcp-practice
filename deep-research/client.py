@@ -7,6 +7,7 @@ from typing import Literal
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters, stdio_client
+from mcp.client.stdio import get_default_environment
 from openai import OpenAI
 
 load_dotenv()
@@ -40,11 +41,9 @@ class MCPClient:
 
     async def connect_to_server(self, servers):
         for name, parameters in servers.items():
-            env = {
-                env_name: os.getenv(env_name) for env_name in parameters.get("env", [])
-            }
-            if parameters["command"] == "docker":
-                env["PATH"] = os.getenv("PATH")
+            env = get_default_environment()
+            for env_name in parameters.get("env", []):
+                env[env_name] = os.getenv(env_name)
             server_params = StdioServerParameters(
                 command=parameters["command"],
                 args=parameters["args"],
