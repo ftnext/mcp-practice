@@ -1,15 +1,24 @@
 # Build server: https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search#build
+from __future__ import annotations
+
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from contextlib import AsyncExitStack
-from typing import Literal, NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters, Tool, stdio_client
 from mcp.client.stdio import get_default_environment
 from openai import OpenAI
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionMessage,
+    ChatCompletionMessageToolCall,
+    ChatCompletionToolParam,
+)
 
 load_dotenv()
 
@@ -29,10 +38,9 @@ class MCPServerParameter(TypedDict):
 
 
 class MCPClient:
-    def __init__(self, openai: OpenAI, model_name: str):
+    def __init__(self, llm_api_client):
         self.exit_stack = AsyncExitStack()
-        self.openai = openai
-        self.model_name = model_name
+        self.llm_api_client = llm_api_client
         self.available_tools: list[Tool] = []
         self.tool2session: dict[ToolName, ClientSession] = {}
 
@@ -71,24 +79,11 @@ class MCPClient:
         )
 
     def completion(self, messages):
-        available_tools = [
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.inputSchema,
-                },
-            }
-            for tool in self.available_tools
-        ]
-
         logger.debug(messages)
-        response = self.openai.chat.completions.create(
-            model=self.model_name,
+        response = self.llm_api_client.completion(
+            messages,
             max_tokens=MAX_TOKENS,
-            messages=messages,
-            tools=available_tools,
+            tools=self.llm_api_client.format_tools(self.available_tools),
         )
         logger.debug(response)
 
@@ -96,21 +91,12 @@ class MCPClient:
         return response.choices[0].message
 
     async def call_tool(self, tool_call):
-        tool_name = tool_call.function.name
-        tool_call_id = tool_call.id
-
-        tool_args = json.loads(tool_call.function.arguments)
-        tool_result = await self.tool2session[tool_name].call_tool(tool_name, tool_args)
+        tool = self.llm_api_client.format_tool_call(tool_call)
+        tool_result = await self.tool2session[tool.name].call_tool(tool.name, tool.args)
         logger.info(
-            "[Calling tool %s with args %s, Got %s]", tool_name, tool_args, tool_result
+            "[Calling tool %s with args %s, Got %s]", tool.name, tool.args, tool_result
         )
-        tool_result_contents = [content.model_dump() for content in tool_result.content]
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "name": tool_name,
-            "content": tool_result_contents,
-        }
+        return self.llm_api_client.format_tool_result(tool_result.content, tool)
 
     async def cleanup(self):
         await self.exit_stack.aclose()
@@ -162,25 +148,100 @@ class ChatSession:
         return message.content
 
 
-async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
+async def main(llm_api_client: LlmWebApiClient) -> None:
     with open("servers.json") as f:
         servers = json.load(f)
-    client = MCPClient(openai_client, model_name)
+    mcp_client = MCPClient(llm_api_client)
     try:
-        await client.connect_to_server(servers["mcpServers"])
-        chat_session = ChatSession(client)
+        await mcp_client.connect_to_server(servers["mcpServers"])
+        chat_session = ChatSession(mcp_client)
         await chat_session.start()
     finally:
-        await client.cleanup()
+        await mcp_client.cleanup()
 
 
-def OpenAIClient(model_name: SupportedModels) -> OpenAI:
-    if model_name == "gpt-4o-mini":
-        return OpenAI()
-    return OpenAI(
-        api_key=os.getenv("GOOGLE_API_KEY"),
-        base_url="https://generativelanguage.googleapis.com/v1beta/",
-    )
+@dataclass
+class GenericToolCall:
+    id: str
+    name: str
+    args: dict[str, Any]
+
+
+class LlmWebApiClientInterface(Protocol):
+    def format_tools(self, tools: Iterable[Tool]): ...
+
+    def completion(self, messages, max_tokens, tools): ...
+
+    def format_tool_call(self, tool_call) -> GenericToolCall: ...
+
+    def format_tool_result(self, result_content, tool_call: GenericToolCall) -> str: ...
+
+
+class OpenAICompatibleApiClient:
+    client: OpenAI
+    model_name: str
+
+    def format_tools(self, tools: Iterable[Tool]) -> list[ChatCompletionToolParam]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.inputSchema,
+                },
+            }
+            for tool in tools
+        ]
+
+    def completion(
+        self, messages: list[ChatCompletionMessage], max_tokens: int, tools
+    ) -> ChatCompletion:
+        return self.client.chat.completions.create(
+            model=self.model_name, max_tokens=max_tokens, messages=messages, tools=tools
+        )
+
+    def format_tool_call(
+        self, tool_call: ChatCompletionMessageToolCall
+    ) -> GenericToolCall:
+        return GenericToolCall(
+            id=tool_call.id,
+            name=tool_call.function.name,
+            args=json.loads(tool_call.function.arguments),
+        )
+
+    def format_tool_result(self, content, tool_call: GenericToolCall):
+        tool_result_contents = [content.model_dump() for content in content]
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "name": tool_call.name,
+            "content": tool_result_contents,
+        }
+
+
+class GPTApiClient(OpenAICompatibleApiClient):
+    def __init__(self, model_name: str) -> None:
+        self.client = OpenAI()
+        self.model_name = model_name
+
+
+class GeminiCompatibleOpenAIApiClient(OpenAICompatibleApiClient):
+    def __init__(self, model_name: str) -> None:
+        self.client = OpenAI(
+            api_key=os.getenv("GOOGLE_API_KEY"),
+            base_url="https://generativelanguage.googleapis.com/v1beta/",
+        )
+        self.model_name = model_name
+
+
+def LlmWebApiClient(model_name: str) -> OpenAI:
+    if model_name.startswith("gpt"):
+        return GPTApiClient(model_name)
+    elif model_name.startswith("gemini"):
+        return GeminiCompatibleOpenAIApiClient(model_name)
+
+    raise ValueError(f"Unsupported model name: {model_name}")
 
 
 if __name__ == "__main__":
@@ -202,5 +263,5 @@ if __name__ == "__main__":
     )
     my_mcp_client_logger.addHandler(my_mcp_client_handler)
 
-    client = OpenAIClient(args.model_name)
-    asyncio.run(main(client, args.model_name))
+    client = LlmWebApiClient(args.model_name)
+    asyncio.run(main(client))
