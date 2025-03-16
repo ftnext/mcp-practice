@@ -7,14 +7,15 @@ import os
 from collections.abc import Iterable, Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, get_args
 
+from anthropic import Anthropic
+from anthropic.types import ContentBlock, ToolUseBlock
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters, Tool, stdio_client
 from mcp.client.stdio import get_default_environment
 from openai import OpenAI
 from openai.types.chat import (
-    ChatCompletion,
     ChatCompletionMessage,
     ChatCompletionMessageToolCall,
     ChatCompletionToolParam,
@@ -26,7 +27,7 @@ MAX_TOKENS = 1000
 
 logger = logging.getLogger("my_mcp_client")
 
-SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash"]
+SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash", "claude-3-5-sonnet-latest"]
 ServerName = str
 ToolName = str
 
@@ -79,16 +80,20 @@ class MCPClient:
         )
 
     def completion(self, messages):
-        logger.debug(messages)
-        response = self.llm_api_client.completion(
+        return self.llm_api_client.completion(
             messages,
             max_tokens=MAX_TOKENS,
             tools=self.llm_api_client.format_tools(self.available_tools),
         )
-        logger.debug(response)
 
-        assert len(response.choices) == 1
-        return response.choices[0].message
+    def get_text(self, message):
+        return self.llm_api_client.get_text(message)
+
+    def get_tool_calls(self, message):
+        return self.llm_api_client.get_tool_calls(message)
+
+    async def call_tools(self, tool_calls):
+        return [await self.call_tool(tool_call) for tool_call in tool_calls]
 
     async def call_tool(self, tool_call):
         tool = self.llm_api_client.format_tool_call(tool_call)
@@ -104,7 +109,7 @@ class MCPClient:
 
 class ChatSession:
     def __init__(self, client: MCPClient) -> None:
-        self.client = client
+        self.mcp_client = client
         self.messages = []
 
     def print_empty_line(self):
@@ -134,18 +139,17 @@ class ChatSession:
 
     async def process_query(self, query: str) -> str:
         self.messages.append({"role": "user", "content": query})
-        message = self.client.completion(self.messages)
+        message = self.mcp_client.completion(self.messages)
 
         self.messages.append(message)
-        while message.tool_calls:
-            for tool_call in message.tool_calls:
-                tool_message = await self.client.call_tool(tool_call)
-                self.messages.append(tool_message)
+        while tool_calls := self.mcp_client.get_tool_calls(message):
+            tool_call_messages = await self.mcp_client.call_tools(tool_calls)
+            self.messages.extend(tool_call_messages)
 
-            message = self.client.completion(self.messages)
+            message = self.mcp_client.completion(self.messages)
             self.messages.append(message)
 
-        return message.content
+        return self.mcp_client.get_text(message)
 
 
 async def main(llm_api_client: LlmWebApiClient) -> None:
@@ -172,6 +176,10 @@ class LlmWebApiClientInterface(Protocol):
 
     def completion(self, messages, max_tokens, tools): ...
 
+    def get_text(self, message): ...
+
+    def get_tool_calls(self, message): ...
+
     def format_tool_call(self, tool_call) -> GenericToolCall: ...
 
     def format_tool_result(self, result_content, tool_call: GenericToolCall) -> str: ...
@@ -196,10 +204,21 @@ class OpenAICompatibleApiClient:
 
     def completion(
         self, messages: list[ChatCompletionMessage], max_tokens: int, tools
-    ) -> ChatCompletion:
-        return self.client.chat.completions.create(
+    ) -> ChatCompletionMessage:
+        logger.debug(messages)
+        response = self.client.chat.completions.create(
             model=self.model_name, max_tokens=max_tokens, messages=messages, tools=tools
         )
+        logger.debug(response)
+
+        assert len(response.choices) == 1
+        return response.choices[0].message
+
+    def get_text(self, message: ChatCompletionMessage) -> str:
+        return message.content
+
+    def get_tool_calls(self, message: ChatCompletionMessage) -> bool:
+        return message.tool_calls
 
     def format_tool_call(
         self, tool_call: ChatCompletionMessageToolCall
@@ -235,11 +254,61 @@ class GeminiCompatibleOpenAIApiClient(OpenAICompatibleApiClient):
         self.model_name = model_name
 
 
+class ClaudeApiClient:
+    def __init__(self, model_name: str) -> None:
+        self.client = Anthropic()
+        self.model_name = model_name
+
+    def format_tools(self, tools: Iterable[Tool]):
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.inputSchema,
+            }
+            for tool in tools
+        ]
+
+    def completion(self, messages, max_tokens, tools) -> list[ContentBlock]:
+        logger.debug(messages)
+        response = self.client.messages.create(
+            model=self.model_name, max_tokens=max_tokens, messages=messages, tools=tools
+        )
+        logger.debug(response)
+        return {"role": "assistant", "content": response.content}
+
+    def get_text(self, message) -> str:
+        content = message["content"]
+        assert len(content) == 1
+        return content[0].text
+
+    def get_tool_calls(self, message) -> list[ToolUseBlock]:
+        contents: list[ContentBlock] = message["content"]
+        return [content for content in contents if content.type == "tool_use"]
+
+    def format_tool_call(self, tool_call: ToolUseBlock) -> GenericToolCall:
+        return GenericToolCall(
+            id=tool_call.id,
+            name=tool_call.name,
+            args=tool_call.input,
+        )
+
+    def format_tool_result(self, content, tool_call: GenericToolCall) -> str:
+        return {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": tool_call.id, "content": content}
+            ],
+        }
+
+
 def LlmWebApiClient(model_name: str) -> OpenAI:
     if model_name.startswith("gpt"):
         return GPTApiClient(model_name)
     elif model_name.startswith("gemini"):
         return GeminiCompatibleOpenAIApiClient(model_name)
+    elif model_name.startswith("claude"):
+        return ClaudeApiClient(model_name)
 
     raise ValueError(f"Unsupported model name: {model_name}")
 
@@ -249,7 +318,7 @@ if __name__ == "__main__":
     import asyncio
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("model_name", choices=["gpt-4o-mini", "gemini-2.0-flash"])
+    parser.add_argument("model_name", choices=get_args(SupportedModels))
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
