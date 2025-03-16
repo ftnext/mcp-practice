@@ -27,7 +27,9 @@ MAX_TOKENS = 1000
 
 logger = logging.getLogger("my_mcp_client")
 
-SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash", "claude-3-5-sonnet-latest"]
+SupportedModels = Literal[
+    "gpt-4o-mini", "gpt-4o", "gemini-2.0-flash", "claude-3-5-sonnet-latest"
+]
 ServerName = str
 ToolName = str
 
