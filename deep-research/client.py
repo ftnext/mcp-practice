@@ -96,6 +96,23 @@ class MCPClient:
         assert len(response.choices) == 1
         return response.choices[0].message
 
+    async def call_tool(self, tool_call):
+        tool_name = tool_call.function.name
+        tool_call_id = tool_call.id
+
+        tool_args = json.loads(tool_call.function.arguments)
+        tool_result = await self.tool2session[tool_name].call_tool(tool_name, tool_args)
+        logger.info(
+            "[Calling tool %s with args %s, Got %s]", tool_name, tool_args, tool_result
+        )
+        tool_result_contents = [content.model_dump() for content in tool_result.content]
+        return {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "name": tool_name,
+            "content": tool_result_contents,
+        }
+
     async def process_query(self, query: str) -> str:
         self.messages.append({"role": "user", "content": query})
         message = self.completion(self.messages)
@@ -103,30 +120,8 @@ class MCPClient:
         self.messages.append(message)
         while message.tool_calls:
             for tool_call in message.tool_calls:
-                tool_name = tool_call.function.name
-                tool_call_id = tool_call.id
-
-                tool_args = json.loads(tool_call.function.arguments)
-                tool_result = await self.tool2session[tool_name].call_tool(
-                    tool_name, tool_args
-                )
-                logger.info(
-                    "[Calling tool %s with args %s, Got %s]",
-                    tool_name,
-                    tool_args,
-                    tool_result,
-                )
-                tool_result_contents = [
-                    content.model_dump() for content in tool_result.content
-                ]
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "name": tool_name,
-                        "content": tool_result_contents,
-                    }
-                )
+                tool_message = await self.call_tool(tool_call)
+                self.messages.append(tool_message)
 
                 message = self.completion(self.messages)
                 self.messages.append(message)
