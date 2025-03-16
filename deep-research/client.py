@@ -13,7 +13,7 @@ load_dotenv()
 
 MAX_TOKENS = 1000
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("my_mcp_client")
 
 SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash"]
 
@@ -66,13 +66,16 @@ class MCPClient:
             for tool in self.available_tools
         ]
 
+        logger.debug(messages)
         response = self.openai.chat.completions.create(
             model=self.model_name,
             max_tokens=MAX_TOKENS,
             messages=messages,
             tools=available_tools,
         )
+        logger.debug(response)
 
+        assert len(response.choices) == 1
         message = response.choices[0].message
         if not message.tool_calls:
             return message.content
@@ -85,6 +88,7 @@ class MCPClient:
 
             tool_args = json.loads(tool_call.function.arguments)
             tool_result = await self.session.call_tool(tool_name, tool_args)
+            logger.debug(tool_result)
             tool_result_contents = [
                 content.model_dump() for content in tool_result.content
             ]
@@ -98,12 +102,15 @@ class MCPClient:
                 }
             )
 
+            logger.debug(messages)
             response = self.openai.chat.completions.create(
                 model=self.model_name,
                 max_tokens=MAX_TOKENS,
                 messages=messages,
                 tools=available_tools,
             )
+            logger.debug(response)
+            assert len(response.choices) == 1
             final_text.append(response.choices[0].message.content)
 
         return "\n".join(final_text)
@@ -154,13 +161,18 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("model_name", choices=["gpt-4o-mini", "gemini-2.0-flash"])
+    parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        format="%(asctime)s | %(levelname)s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
-        level=logging.INFO,
-        filename="mcp-client.log",
+    my_mcp_client_logger = logging.getLogger("my_mcp_client")
+    my_mcp_client_logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    my_mcp_client_handler = logging.FileHandler("mcp-client.log")
+    my_mcp_client_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+        )
     )
+    my_mcp_client_logger.addHandler(my_mcp_client_handler)
 
     client = OpenAIClient(args.model_name)
     asyncio.run(main(client, args.model_name))
