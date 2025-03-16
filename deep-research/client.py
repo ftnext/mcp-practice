@@ -84,6 +84,7 @@ class MCPClient:
             messages,
             max_tokens=MAX_TOKENS,
             tools=self.llm_api_client.format_tools(self.available_tools),
+            temperature=0.0,
         )
 
     def get_text(self, message):
@@ -174,7 +175,7 @@ class GenericToolCall:
 class LlmWebApiClientInterface(Protocol):
     def format_tools(self, tools: Iterable[Tool]): ...
 
-    def completion(self, messages, max_tokens, tools): ...
+    def completion(self, messages, max_tokens, tools, temperature): ...
 
     def get_text(self, message): ...
 
@@ -203,11 +204,15 @@ class OpenAICompatibleApiClient:
         ]
 
     def completion(
-        self, messages: list[ChatCompletionMessage], max_tokens: int, tools
+        self, messages: list[ChatCompletionMessage], max_tokens: int, tools, temperature
     ) -> ChatCompletionMessage:
         logger.debug(messages)
         response = self.client.chat.completions.create(
-            model=self.model_name, max_tokens=max_tokens, messages=messages, tools=tools
+            model=self.model_name,
+            max_tokens=max_tokens,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
         )
         logger.debug(response)
 
@@ -269,10 +274,16 @@ class ClaudeApiClient:
             for tool in tools
         ]
 
-    def completion(self, messages, max_tokens, tools) -> list[ContentBlock]:
+    def completion(
+        self, messages, max_tokens, tools, temperature
+    ) -> list[ContentBlock]:
         logger.debug(messages)
         response = self.client.messages.create(
-            model=self.model_name, max_tokens=max_tokens, messages=messages, tools=tools
+            model=self.model_name,
+            max_tokens=max_tokens,
+            messages=messages,
+            tools=tools,
+            temperature=temperature,
         )
         logger.debug(response)
         return {"role": "assistant", "content": response.content}
