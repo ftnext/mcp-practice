@@ -35,7 +35,6 @@ class MCPClient:
         self.model_name = model_name
         self.available_tools: list[Tool] = []
         self.tool2session: dict[ToolName, ClientSession] = {}
-        self.messages = []
 
     async def connect_to_server(self, servers: Mapping[ServerName, MCPServerParameter]):
         sessions: dict[ServerName, ClientSession] = {}
@@ -113,21 +112,6 @@ class MCPClient:
             "content": tool_result_contents,
         }
 
-    async def process_query(self, query: str) -> str:
-        self.messages.append({"role": "user", "content": query})
-        message = self.completion(self.messages)
-
-        self.messages.append(message)
-        while message.tool_calls:
-            for tool_call in message.tool_calls:
-                tool_message = await self.call_tool(tool_call)
-                self.messages.append(tool_message)
-
-                message = self.completion(self.messages)
-                self.messages.append(message)
-
-        return message.content
-
     async def cleanup(self):
         await self.exit_stack.aclose()
 
@@ -135,6 +119,7 @@ class MCPClient:
 class ChatSession:
     def __init__(self, client: MCPClient) -> None:
         self.client = client
+        self.messages = []
 
     def print_empty_line(self):
         print()
@@ -152,7 +137,7 @@ class ChatSession:
                 if query.lower() == "quit":
                     break
 
-                response = await self.client.process_query(query)
+                response = await self.process_query(query)
                 self.print_empty_line()
                 print(response)
             except Exception as e:
@@ -160,6 +145,21 @@ class ChatSession:
                 self.print_empty_line()
                 print("エラーが発生しました。終了します")
                 break
+
+    async def process_query(self, query: str) -> str:
+        self.messages.append({"role": "user", "content": query})
+        message = self.client.completion(self.messages)
+
+        self.messages.append(message)
+        while message.tool_calls:
+            for tool_call in message.tool_calls:
+                tool_message = await self.client.call_tool(tool_call)
+                self.messages.append(tool_message)
+
+                message = self.client.completion(self.messages)
+                self.messages.append(message)
+
+        return message.content
 
 
 async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
