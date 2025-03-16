@@ -156,8 +156,8 @@ class ChatSession:
                 tool_message = await self.client.call_tool(tool_call)
                 self.messages.append(tool_message)
 
-                message = self.client.completion(self.messages)
-                self.messages.append(message)
+            message = self.client.completion(self.messages)
+            self.messages.append(message)
 
         return message.content
 
