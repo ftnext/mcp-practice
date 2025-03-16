@@ -11,6 +11,10 @@
         "mcp/brave-search"
       ],
       "env": ["BRAVE_API_KEY"]
+    },
+    "fetch": {
+      "command": "uvx",
+      "args": ["mcp-server-fetch"]
     }
   }
 }
