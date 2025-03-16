@@ -35,6 +35,7 @@ class MCPClient:
         self.model_name = model_name
         self.available_tools: list[Tool] = []
         self.tool2session: dict[ToolName, ClientSession] = {}
+        self.messages = []
 
     async def connect_to_server(self, servers: Mapping[ServerName, MCPServerParameter]):
         sessions: dict[ServerName, ClientSession] = {}
@@ -71,7 +72,7 @@ class MCPClient:
         )
 
     async def process_query(self, query: str) -> str:
-        messages = [{"role": "user", "content": query}]
+        self.messages.append({"role": "user", "content": query})
         available_tools = [
             {
                 "type": "function",
@@ -84,22 +85,22 @@ class MCPClient:
             for tool in self.available_tools
         ]
 
-        logger.debug(messages)
+        logger.debug(self.messages)
         response = self.openai.chat.completions.create(
             model=self.model_name,
             max_tokens=MAX_TOKENS,
-            messages=messages,
+            messages=self.messages,
             tools=available_tools,
         )
         logger.debug(response)
 
         assert len(response.choices) == 1
         message = response.choices[0].message
+        self.messages.append(message)
         if not message.tool_calls:
             return message.content
 
         final_text = []
-        messages.append(message)
         for tool_call in message.tool_calls:
             tool_name = tool_call.function.name
             tool_call_id = tool_call.id
@@ -117,7 +118,7 @@ class MCPClient:
             tool_result_contents = [
                 content.model_dump() for content in tool_result.content
             ]
-            messages.append(
+            self.messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
@@ -126,11 +127,11 @@ class MCPClient:
                 }
             )
 
-            logger.debug(messages)
+            logger.debug(self.messages)
             response = self.openai.chat.completions.create(
                 model=self.model_name,
                 max_tokens=MAX_TOKENS,
-                messages=messages,
+                messages=self.messages,
                 tools=available_tools,
             )
             logger.debug(response)
