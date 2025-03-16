@@ -20,33 +20,47 @@ SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash"]
 
 class MCPClient:
     def __init__(self, openai: OpenAI, model_name: str):
-        self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()
         self.openai = openai
         self.model_name = model_name
+        self.sessions: dict[str, ClientSession] = {}
+        self.available_tools = []
+        self.tool2session = {}
 
-    async def connect_to_server(self):
-        server_params = StdioServerParameters(
-            command="docker",
-            args=["run", "-i", "--rm", "-e", "BRAVE_API_KEY", "mcp/brave-search"],
-            env={
-                "BRAVE_API_KEY": os.getenv("BRAVE_API_KEY"),
-                "PATH": os.getenv("PATH"),
-            },
-        )
+    async def initialize(self):
+        for session in self.sessions.values():
+            await session.initialize()
 
-        stdio_transport = await self.exit_stack.enter_async_context(
-            stdio_client(server_params)
-        )
-        self.stdio, self.write = stdio_transport
-        self.session = await self.exit_stack.enter_async_context(
-            ClientSession(self.stdio, self.write)
-        )
+    async def list_tools(self):
+        for session in self.sessions.values():
+            response = await session.list_tools()
+            self.available_tools.extend(response.tools)
+            for tool in response.tools:
+                self.tool2session[tool.name] = session
 
-        await self.session.initialize()
+    async def connect_to_server(self, servers):
+        for name, parameters in servers.items():
+            env = {
+                env_name: os.getenv(env_name) for env_name in parameters.get("env", [])
+            }
+            if parameters["command"] == "docker":
+                env["PATH"] = os.getenv("PATH")
+            server_params = StdioServerParameters(
+                command=parameters["command"],
+                args=parameters["args"],
+                env=env,
+            )
 
-        response = await self.session.list_tools()
-        self.available_tools = response.tools
+            stdio_transport = await self.exit_stack.enter_async_context(
+                stdio_client(server_params)
+            )
+            self.sessions[name] = await self.exit_stack.enter_async_context(
+                ClientSession(*stdio_transport)
+            )
+
+        await self.initialize()
+
+        await self.list_tools()
         logger.info(
             "Connection to server with tools: %s",
             [tool.name for tool in self.available_tools],
@@ -87,12 +101,18 @@ class MCPClient:
             tool_call_id = tool_call.id
 
             tool_args = json.loads(tool_call.function.arguments)
-            tool_result = await self.session.call_tool(tool_name, tool_args)
-            logger.debug(tool_result)
+            tool_result = await self.tool2session[tool_name].call_tool(
+                tool_name, tool_args
+            )
+            logger.info(
+                "[Calling tool %s with args %s, Got %s]",
+                tool_name,
+                tool_args,
+                tool_result,
+            )
             tool_result_contents = [
                 content.model_dump() for content in tool_result.content
             ]
-            logger.info("[Calling tool %s with args %s]", tool_name, tool_args)
             messages.append(
                 {
                     "role": "tool",
@@ -138,9 +158,11 @@ class MCPClient:
 
 
 async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
+    with open("servers.json") as f:
+        servers = json.load(f)
     client = MCPClient(openai_client, model_name)
     try:
-        await client.connect_to_server()
+        await client.connect_to_server(servers["mcpServers"])
         await client.chat_loop()
     finally:
         await client.cleanup()
