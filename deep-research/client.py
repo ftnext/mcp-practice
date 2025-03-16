@@ -149,8 +149,10 @@ class MCPClient:
                 print()
                 print(response)
             except Exception as e:
+                logger.exception("Error: %r", e)
                 print()
-                print(f"Error: {e!r}")
+                print("エラーが発生しました。終了します")
+                break
 
     async def cleanup(self):
         await self.exit_stack.aclose()
