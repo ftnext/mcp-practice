@@ -141,13 +141,16 @@ class ChatSession:
     def __init__(self, client: MCPClient) -> None:
         self.client = client
 
+    def print_empty_line(self):
+        print()
+
     async def start(self) -> None:
         logger.info("MCP Client Started!")
         print("Type your queries or `quit` to exit.")
 
         while True:
             try:
-                print()
+                self.print_empty_line()
                 query = input("Query: ").strip()
                 if query == "":
                     continue
@@ -155,11 +158,11 @@ class ChatSession:
                     break
 
                 response = await self.client.process_query(query)
-                print()
+                self.print_empty_line()
                 print(response)
             except Exception as e:
                 logger.exception("Error: %r", e)
-                print()
+                self.print_empty_line()
                 print("エラーが発生しました。終了します")
                 break
 
