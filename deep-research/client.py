@@ -3,6 +3,7 @@ import json
 import logging
 import os
 from contextlib import AsyncExitStack
+from typing import Literal
 
 from dotenv import load_dotenv
 from mcp import ClientSession, StdioServerParameters, stdio_client
@@ -10,20 +11,19 @@ from openai import OpenAI
 
 load_dotenv()
 
-MODEL_NAME = "gemini-2.0-flash"
 MAX_TOKENS = 1000
 
 logger = logging.getLogger(__name__)
 
+SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash"]
+
 
 class MCPClient:
-    def __init__(self):
+    def __init__(self, openai: OpenAI, model_name: str):
         self.session: ClientSession | None = None
         self.exit_stack = AsyncExitStack()
-        self.openai = OpenAI(
-            api_key=os.getenv("GOOGLE_API_KEY"),
-            base_url="https://generativelanguage.googleapis.com/v1beta/",
-        )
+        self.openai = openai
+        self.model_name = model_name
 
     async def connect_to_server(self):
         server_params = StdioServerParameters(
@@ -67,7 +67,7 @@ class MCPClient:
         ]
 
         response = self.openai.chat.completions.create(
-            model=MODEL_NAME,
+            model=self.model_name,
             max_tokens=MAX_TOKENS,
             messages=messages,
             tools=available_tools,
@@ -99,7 +99,7 @@ class MCPClient:
             )
 
             response = self.openai.chat.completions.create(
-                model=MODEL_NAME,
+                model=self.model_name,
                 max_tokens=MAX_TOKENS,
                 messages=messages,
                 tools=available_tools,
@@ -130,8 +130,8 @@ class MCPClient:
         await self.exit_stack.aclose()
 
 
-async def main() -> None:
-    client = MCPClient()
+async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
+    client = MCPClient(openai_client, model_name)
     try:
         await client.connect_to_server()
         await client.chat_loop()
@@ -139,12 +139,28 @@ async def main() -> None:
         await client.cleanup()
 
 
+def OpenAIClient(model_name: SupportedModels) -> OpenAI:
+    if model_name == "gpt-4o-mini":
+        return OpenAI()
+    return OpenAI(
+        api_key=os.getenv("GOOGLE_API_KEY"),
+        base_url="https://generativelanguage.googleapis.com/v1beta/",
+    )
+
+
 if __name__ == "__main__":
+    import argparse
     import asyncio
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("model_name", choices=["gpt-4o-mini", "gemini-2.0-flash"])
+    args = parser.parse_args()
 
     logging.basicConfig(
         format="%(asctime)s | %(levelname)s | %(name)s:%(funcName)s:%(lineno)d - %(message)s",
         level=logging.INFO,
         filename="mcp-client.log",
     )
-    asyncio.run(main())
+
+    client = OpenAIClient(args.model_name)
+    asyncio.run(main(client, args.model_name))
