@@ -133,7 +133,15 @@ class MCPClient:
 
         return message.content
 
-    async def chat_loop(self) -> None:
+    async def cleanup(self):
+        await self.exit_stack.aclose()
+
+
+class ChatSession:
+    def __init__(self, client: MCPClient) -> None:
+        self.client = client
+
+    async def start(self) -> None:
         logger.info("MCP Client Started!")
         print("Type your queries or `quit` to exit.")
 
@@ -146,7 +154,7 @@ class MCPClient:
                 if query.lower() == "quit":
                     break
 
-                response = await self.process_query(query)
+                response = await self.client.process_query(query)
                 print()
                 print(response)
             except Exception as e:
@@ -155,9 +163,6 @@ class MCPClient:
                 print("エラーが発生しました。終了します")
                 break
 
-    async def cleanup(self):
-        await self.exit_stack.aclose()
-
 
 async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
     with open("servers.json") as f:
@@ -165,7 +170,8 @@ async def main(openai_client: OpenAI, model_name: SupportedModels) -> None:
     client = MCPClient(openai_client, model_name)
     try:
         await client.connect_to_server(servers["mcpServers"])
-        await client.chat_loop()
+        chat_session = ChatSession(client)
+        await chat_session.start()
     finally:
         await client.cleanup()
 
