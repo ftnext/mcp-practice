@@ -2,11 +2,12 @@
 import json
 import logging
 import os
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
-from typing import Literal
+from typing import Literal, NotRequired, TypedDict
 
 from dotenv import load_dotenv
-from mcp import ClientSession, StdioServerParameters, stdio_client
+from mcp import ClientSession, StdioServerParameters, Tool, stdio_client
 from mcp.client.stdio import get_default_environment
 from openai import OpenAI
 
@@ -21,15 +22,21 @@ ServerName = str
 ToolName = str
 
 
+class MCPServerParameter(TypedDict):
+    command: str
+    args: list[str]
+    env: NotRequired[list[str]]
+
+
 class MCPClient:
     def __init__(self, openai: OpenAI, model_name: str):
         self.exit_stack = AsyncExitStack()
         self.openai = openai
         self.model_name = model_name
-        self.available_tools = []
+        self.available_tools: list[Tool] = []
         self.tool2session: dict[ToolName, ClientSession] = {}
 
-    async def connect_to_server(self, servers):
+    async def connect_to_server(self, servers: Mapping[ServerName, MCPServerParameter]):
         sessions: dict[ServerName, ClientSession] = {}
         for name, parameters in servers.items():
             env = get_default_environment()
