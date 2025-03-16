@@ -17,6 +17,8 @@ MAX_TOKENS = 1000
 logger = logging.getLogger("my_mcp_client")
 
 SupportedModels = Literal["gpt-4o-mini", "gemini-2.0-flash"]
+ServerName = str
+ToolName = str
 
 
 class MCPClient:
@@ -24,22 +26,11 @@ class MCPClient:
         self.exit_stack = AsyncExitStack()
         self.openai = openai
         self.model_name = model_name
-        self.sessions: dict[str, ClientSession] = {}
         self.available_tools = []
-        self.tool2session = {}
-
-    async def initialize(self):
-        for session in self.sessions.values():
-            await session.initialize()
-
-    async def list_tools(self):
-        for session in self.sessions.values():
-            response = await session.list_tools()
-            self.available_tools.extend(response.tools)
-            for tool in response.tools:
-                self.tool2session[tool.name] = session
+        self.tool2session: dict[ToolName, ClientSession] = {}
 
     async def connect_to_server(self, servers):
+        sessions: dict[ServerName, ClientSession] = {}
         for name, parameters in servers.items():
             env = get_default_environment()
             for env_name in parameters.get("env", []):
@@ -53,13 +44,20 @@ class MCPClient:
             stdio_transport = await self.exit_stack.enter_async_context(
                 stdio_client(server_params)
             )
-            self.sessions[name] = await self.exit_stack.enter_async_context(
+            sessions[name] = await self.exit_stack.enter_async_context(
                 ClientSession(*stdio_transport)
             )
 
-        await self.initialize()
+        for name, session in sessions.items():
+            await session.initialize()
+            response = await session.list_tools()
+            self.available_tools.extend(response.tools)
+            for tool in response.tools:
+                self.tool2session[tool.name] = session
+            logger.debug(
+                "Session of server %s is initialized and tools are listed", name
+            )
 
-        await self.list_tools()
         logger.info(
             "Connection to server with tools: %s",
             [tool.name for tool in self.available_tools],
