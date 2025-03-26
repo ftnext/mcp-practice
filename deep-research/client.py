@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, get_args
 
+import colorama
 from anthropic import Anthropic
 from anthropic.types import ContentBlock, ToolUseBlock
 from dotenv import load_dotenv
@@ -22,6 +23,7 @@ from openai.types.chat import (
 )
 
 load_dotenv()
+colorama.init(autoreset=True)
 
 MAX_TOKENS = 1000
 
@@ -99,12 +101,15 @@ class MCPClient:
         return [await self.call_tool(tool_call) for tool_call in tool_calls]
 
     async def call_tool(self, tool_call):
-        tool = self.llm_api_client.format_tool_call(tool_call)
+        tool = self.format_tool_call(tool_call)
         tool_result = await self.tool2session[tool.name].call_tool(tool.name, tool.args)
         logger.info(
             "[Calling tool %s with args %s, Got %s]", tool.name, tool.args, tool_result
         )
         return self.llm_api_client.format_tool_result(tool_result.content, tool)
+
+    def format_tool_call(self, tool_call):
+        return self.llm_api_client.format_tool_call(tool_call)
 
     async def cleanup(self):
         await self.exit_stack.aclose()
@@ -146,7 +151,13 @@ class ChatSession:
 
         self.messages.append(message)
         while tool_calls := self.mcp_client.get_tool_calls(message):
+            for tool_call in tool_calls:
+                call = self.mcp_client.format_tool_call(tool_call)
+                print(f"{colorama.Fore.CYAN}Call tool {call.name!r} with {call.args}")
             tool_call_messages = await self.mcp_client.call_tools(tool_calls)
+            for tool_call_message in tool_call_messages:
+                print(f"{colorama.Back.CYAN}{tool_call_message["content"]}")
+            print()
             self.messages.extend(tool_call_messages)
 
             message = self.mcp_client.completion(self.messages)
